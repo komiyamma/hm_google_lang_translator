@@ -7,6 +7,7 @@ hidemaruversion "9.35.99";
 jsmode @"WebView2\HmGoogleLangTranslator";
 
 js {
+debuginfo(2);
 
 // 環境変数から、Google Apps Script の翻訳APIへのURLアドレスを取得。
 let endpoint_url = getenv("GOOGLE_SCRIPT_TRANSLATION_API");
@@ -113,23 +114,22 @@ if (timeOutHandler) {
 }
 
 
-// GETリクエストで翻訳を実行
 async function requestTranslate(params) {
-
-    const queryParams = new URLSearchParams(params).toString();
-    const url = `${endpoint_url}?${queryParams}`;
-
     try {
-        const response = await fetch(url, {
-            method: "GET",
+        const response = await fetch(endpoint_url, {
+            method: "POST",
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: JSON.stringify(params) // JSON.stringify でJSONデータを文字列化
         });
 
         if (!response.ok) {
             throw new Error(`ネットワークのレスポンスでエラー発生: ${response.status}`);
         }
 
-        const answerText = await response.text();
-        translate_text = answerText;
+        const answerJSON = await response.json();
+        translate_text = answerJSON.result;
 
         let isScheduled = 0;
         function attemptExecution() {
@@ -144,7 +144,7 @@ async function requestTranslate(params) {
         timeOutHandler = hidemaru.setTimeout(attemptExecution, 0); // まずは0ディレイで実行を試みる
 
     } catch (error) {
-        writeLineOutputPane(error);
+        writeLineOutputPane("翻訳エラー:" + error);
     }
 }
 
