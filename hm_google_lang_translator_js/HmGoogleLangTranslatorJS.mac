@@ -1,54 +1,163 @@
-﻿/*
- * HmGoogleLangTranslatorJS.mac v1.0.0.1
- * Copyright (c) 2019 Akitsugu Komiyama
- * under the MIT License
- */
+﻿// HmGoogleLangTranslator.mac v2.0.0.1
+// Copyright (c) 2023-2025 Akitsugu Komiyama
+// under the MIT License
+
+hidemaruversion "9.35.99";
+
+jsmode @"WebView2\HmGoogleLangTranslator";
+
+js {
+debuginfo(2);
 
 // 環境変数から、Google Apps Script の翻訳APIへのURLアドレスを取得。
-$url = getenv("GOOGLE_SCRIPT_TRANSLATION_API");
+let endpoint_url = getenv("GOOGLE_SCRIPT_TRANSLATION_API");
 
 // 環境変数ではなく、直接ファイルに書いてしまうなら以下を書き換えて、コメントアウトも外す
-// $url = "https://script.google.com/macros/s/********************************************/exec";
+// let endpoint_url = "https://script.google.com/macros/s/********************************************/exec";
 
-if (filename == currentmacrofilename) {
-    // このマクロ自身に対して実行するのは、
-    // マクロのソース中に文字列を挿入してしまうため
-    // 意図せずマクロを破壊してしまう可能性が高い。
-    // 
-    // ほぼ確実に意図しない操作とみなして、止める
-    message("HmGoogleLangTranslator.mac 自身を対象にはできません。");
-    endmacro;
+// 翻訳対象のテキスト
+let text = hidemaru.getSelectedText() || hidemaru.getTotalText();
+
+let source = getarg(0);
+let target = getarg(1);
+
+if (!source && !target) {
+    writeLineOutputPane(
+        "「翻訳元の言語」も「翻訳先の言語」も両方が指定されていません。\r\n" +
+        "「HmGoogleLangTranslator.mac」を直接実行していませんか？\r\n" +
+        "「HmGoogleLangTranslator.mac」は直接実行する対象ではなく、「別のマクロから引数を付けて」呼び出すものです。\r\n"
+    );
 }
 
-$source=getarg(0);
-$target=getarg(1);
+const params = {
+    text,
+    source,
+    target
+};
 
-if (!#DLL) { #DLL = loaddll(hidemarudir + @"\hmJS.dll"); }
-if (!#DLL) { #DLL = loaddll(hidemarudir + @"\hmV8.dll"); }
-#r = dllfuncw( #DLL, "DoString", R"JS(
+// マクロ実行から翻訳結果が返ってくるまでの間に時間的なずれがあり、その間編集ペインはフリーであるため、選択中だったかを記憶しておく
+// これにより翻訳マクロを実行した直後、まだ翻訳結果が返っていていないのにカーソルを動作させても良い形となり、ストレスがかなり軽減できる
+const [is_last_selecting, n_seltopcolumn, n_selendcolumn, n_selendlineno, n_linelen2] = [selecting(), seltopcolumn(), selendcolumn(), selendlineno(), linelen2()];
 
-currentmacrodirectory = hm.Macro.Var("currentmacrodirectory");
-var lib = host.lib(currentmacrodirectory + "/HmGoogleLangTranslate.dll");
-
-var text   = hm.Edit.SelectedText || hm.Edit.TotalText
-
-var url    = hm.Macro.Var("$url");
-var source = hm.Macro.Var("$source");
-var target = hm.Macro.Var("$target");
-
-var Translator = lib.HmGoogleLangTranslate.HmGoogleLangTranslate;
-var answer = Translator.Translate(text, url, source, target);
-hm.Macro.Var("$answer", answer);
-
-)JS"
-);
-
-// 翻訳した文字列は$answerという変数に入ってるので、
-// 好きにして… 💔
-if (selecting) {
-    escape;
-    moveto selendx, selendy; // 選択してたら解除しつつも選択範囲の最後尾に
-} else {
-    gofileend; // 最後尾に
+var translate_text;
+function getAnswerText() {
+    try {
+        return translate_text.toString()
+    } catch (error) {
+        return translate_text.toString()
+    } finally {
+        translate_text = "";
+    }
 }
-insert "\n" + $answer;
+
+// 最後の表示用。出力の場所ややり方変えたければ、この関数を編集のこと。
+function printTranslateText() {
+    let answer = getAnswerText();
+
+    if (answer == null) {
+        return;
+    }
+
+    try {
+        begingroupundo();
+
+        escapeselect();
+
+        // 選択中なら選択を解除して、選択位置の最後の座標に移動
+        if (is_last_selecting) {
+            moveto2(n_selendcolumn, n_selendlineno); // 選択してたら解除しつつも選択範囲の最後尾に。解除してからでも最後の選択位置を元にするから大丈夫。
+            // 全体を選択していたならば...
+            if (text == hidemaru.getTotalText()) {
+                // 何も選択していない時と同じ処理
+                if (column() != 0) {
+                    insertreturn();
+                }
+            }
+
+            // 行末まで選択することで、カーソルが先頭にある。
+            else if (n_selendcolumn == 0) {
+                // 最後に改行がなければ改行を付ける
+                answer = answer.endsWith("\n") ? answer : `${answer}\n`;
+            }
+
+            // 文頭から文末まで選択することで行選択相当になっている。
+            else if (n_seltopcolumn == 0 && n_selendcolumn == n_linelen2) {
+                // 文頭に最後改行が無いので、先頭に改行を入れる
+                // 文末の改行は選択している最後が改行を含むか含まないかでそのままにしておけば辻褄が合う
+                answer = `\n${answer}`;
+            }
+        }
+        // 選択中でないなら、文末に追加
+        else {
+            gofileend(); // 最後尾に
+
+            // 移動した結果、カラム位置が「行の先頭」でないなら１つ改行入れて行の先頭へ
+            if (column() != 0) {
+                insertreturn();
+            }
+        }
+
+        insert(answer);
+
+        endgroupundo();
+
+    } catch (error) {
+        writeLineOutputPane("翻訳エラー:" + error);
+    } finally {
+        translate_text = "";
+    }
+}
+
+var timeOutHandler;
+if (timeOutHandler) {
+    hidemaru.clearTimeout(timeOutHandler);
+}
+
+
+async function requestTranslate(params) {
+    try {
+        const response = await fetch(endpoint_url, {
+            method: "POST",
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: JSON.stringify(params) // JSON.stringify でJSONデータを文字列化
+        });
+
+        if (!response.ok) {
+            throw new Error(`ネットワークのレスポンスでエラー発生: ${response.status}`);
+        }
+
+        const answerJSON = await response.json();
+        translate_text = answerJSON.result;
+
+        let isScheduled = 0;
+        function attemptExecution() {
+            if (!isScheduled) {
+                isScheduled = hidemaru.postExecMacroMemory("js{ printTranslateText(); }");
+            }
+            if (!isScheduled) {
+                timeOutHandler = hidemaru.setTimeout(attemptExecution, 200); // 200ミリ秒後に再度実行を試みる
+            }
+        }
+
+        timeOutHandler = hidemaru.setTimeout(attemptExecution, 0); // まずは0ディレイで実行を試みる
+
+    } catch (error) {
+        writeLineOutputPane("翻訳エラー:" + error);
+    }
+}
+
+// エラーなどをアプトプット枠に表示する用途
+function writeLineOutputPane(msg) {
+    let dll = loaddll("HmOutputPane.dll");
+    msg = msg.replaceAll("\r\n", "\r");
+    msg = msg.replaceAll("\n", "\r\n");
+    dll.dllFuncW.OutputW(hidemaru.getCurrentWindowHandle(), msg + "\r\n");
+}
+
+requestTranslate(params);
+
+
+
+} // js
